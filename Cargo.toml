@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 aws-config = { version = "1.5.8", features = ["behavior-version-latest"] }
 aws-sdk-cloudwatchlogs = "1.52.0"
+chrono = "0.4.38"
 clap = { version = "4.5.20", features = ["derive"] }
 crossterm = "0.28.1"
 fuzzy-matcher = "0.3.7"
