@@ -4,7 +4,7 @@ use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::{
     crossterm::event::{self, KeyCode, KeyEventKind},
     style::Stylize,
-    widgets::Paragraph,
+    widgets::{List, Paragraph},
     DefaultTerminal,
 };
 
@@ -37,7 +37,7 @@ async fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
     };
 
     loop {
-        let groups = if search_term.is_empty() {
+        let mut groups = if search_term.is_empty() {
             log_groups.clone()
         } else {
             matches
@@ -46,8 +46,10 @@ async fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
                 .map(|g| format!("{} ({})", g.0, g.1))
                 .collect::<Vec<String>>()
         };
+        groups.push(format!("Searching for '{}'", search_term));
+        groups.rotate_right(1);
         terminal.draw(|frame| {
-            let greeting = Paragraph::new(format!("{} {:?}", search_term, groups));
+            let greeting = List::new(groups);
             frame.render_widget(greeting, frame.area());
         })?;
 
