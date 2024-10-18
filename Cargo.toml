@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+aws-config = { version = "1.5.8", features = ["behavior-version-latest"] }
+aws-sdk-cloudwatchlogs = "1.52.0"
+clap = { version = "4.5.20", features = ["derive"] }
+crossterm = "0.28.1"
+fuzzy-matcher = "0.3.7"
+ratatui = "0.28.1"
+tokio = { version ="1.40.0", features = ["rt-multi-thread", "io-std", "macros"]}
