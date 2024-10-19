@@ -8,7 +8,8 @@ use crossterm::style::Stylize;
 use futures::StreamExt;
 
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
-use log_groups::{LogGroupListComponent, LogGroupListState, LogGroupSelectionOutboundMessage};
+use log_group::{LogViewerOutboundMessage, LogViewerState, LogVieweromponent};
+use log_viewer::{LogGroupListComponent, LogGroupSelectionOutboundMessage};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{Event, EventStream, KeyCode, KeyEventKind},
@@ -20,7 +21,8 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
-mod log_groups;
+mod log_group;
+mod log_viewer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,6 +41,8 @@ struct App {
     selected_group: Option<String>,
     log_groups_component: LogGroupListComponent,
     log_group_selection_rx: mpsc::UnboundedReceiver<LogGroupSelectionOutboundMessage>,
+    log_viewer_component: LogVieweromponent,
+    log_viewer_rx: mpsc::UnboundedReceiver<LogViewerOutboundMessage>,
 }
 
 impl App {
@@ -53,11 +57,28 @@ impl App {
                 event = self.log_group_selection_rx.recv() => {
                     match event {
                         Some(LogGroupSelectionOutboundMessage::SelectedGroup(group)) => {
-                            self.selected_group = Some(group);
+                            self.selected_group = Some(group.clone());
+                            self.log_viewer_component.log_group_name = group;
+                            // TODO handle reselecvtion and stuff
+                            self.log_viewer_component.run()
                         },
                         None => (),
                         Some(LogGroupSelectionOutboundMessage::ApplySearch) => {
                             self.log_groups_component.apply_search();
+                        }
+
+                    }
+                },
+                 event = self.log_viewer_rx.recv() => {
+                    match event {
+                        None => (),
+                        Some(LogViewerOutboundMessage::ReRender) => {
+                            self.log_viewer_component.set_logs();
+                        }
+                        Some(LogViewerOutboundMessage::UnselectLogGroup) => {
+                            self.selected_group = None;
+                            self.log_viewer_component.clear_logs();
+                            self.log_viewer_component.log_group_name.clear();
                         }
 
                     }
@@ -69,11 +90,19 @@ impl App {
     }
 
     fn draw(&self, frame: &mut Frame) {
-        frame.render_widget(&self.log_groups_component, frame.area());
+        if self.selected_group.is_some() {
+            frame.render_widget(&self.log_viewer_component, frame.area());
+        } else {
+            frame.render_widget(&self.log_groups_component, frame.area());
+        }
     }
 
     fn handle_event(&mut self, event: &Event) {
-        let prevent_exit = self.log_groups_component.handle_event(event);
+        let prevent_exit = if self.selected_group.is_some() {
+            self.log_viewer_component.handle_event(event)
+        } else {
+            self.log_groups_component.handle_event(event)
+        };
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
                 match key.code {
@@ -92,11 +121,14 @@ impl App {
 impl App {
     fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<LogGroupSelectionOutboundMessage>();
+        let (log_viewer_tx, log_viewer_rx) = mpsc::unbounded_channel::<LogViewerOutboundMessage>();
         Self {
-            log_group_selection_rx: rx,
             should_quit: false,
             selected_group: None,
             log_groups_component: LogGroupListComponent::new(tx),
+            log_viewer_component: LogVieweromponent::new(log_viewer_tx),
+            log_viewer_rx,
+            log_group_selection_rx: rx,
         }
     }
 }
