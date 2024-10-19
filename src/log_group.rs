@@ -5,7 +5,7 @@ use std::{
 
 use aws_sdk_cloudwatchlogs::types::QueryStatus;
 use color_eyre::owo_colors::OwoColorize;
-use crossterm::event::{Event, KeyCode, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::{
     buffer::Buffer,
@@ -144,12 +144,20 @@ impl LogVieweromponent {
         // }
     }
 
-    fn scroll_down(&self) {
-        self.state.write().unwrap().table_state.scroll_down_by(1);
+    fn scroll_down(&self, amount: Option<u16>) {
+        self.state
+            .write()
+            .unwrap()
+            .table_state
+            .scroll_down_by(amount.unwrap_or(1));
     }
 
-    fn scroll_up(&self) {
-        self.state.write().unwrap().table_state.scroll_up_by(1);
+    fn scroll_up(&self, amount: Option<u16>) {
+        self.state
+            .write()
+            .unwrap()
+            .table_state
+            .scroll_up_by(amount.unwrap_or(1));
     }
 
     pub fn set_logs(&mut self) {
@@ -167,8 +175,8 @@ impl LogVieweromponent {
             Event::Key(key) => key,
             _ => return false,
         };
-        match key.code {
-            KeyCode::Esc => {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
                 let _ = self
                     .state
                     .write()
@@ -177,8 +185,10 @@ impl LogVieweromponent {
                     .send(LogViewerOutboundMessage::UnselectLogGroup);
                 return true;
             }
-            KeyCode::Char('k') | KeyCode::Down => self.scroll_up(),
-            KeyCode::Char('j') | KeyCode::Up => self.scroll_down(),
+            (KeyCode::Char('k') | KeyCode::Down, _) => self.scroll_up(None),
+            (KeyCode::Char('j') | KeyCode::Up, _) => self.scroll_down(None),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.scroll_up(Some(10)),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.scroll_down(Some(10)),
             _ => (),
         };
         false
