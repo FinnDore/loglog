@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
-use crossterm::event::{Event, KeyCode, KeyEventKind};
-use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
+use aws_sdk_cloudwatchlogs::types::QueryStatus;
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Rect},
@@ -11,50 +11,39 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
+use crate::shared::LoadingState;
+
 #[derive(Debug, Clone)]
-pub struct LogGroupListComponent {
-    pub(crate) state: Arc<RwLock<LogGroupListState>>,
-    sorted_log_groups: Vec<String>,
-    search_term: String,
-    is_searching: bool,
+pub struct LogVieweromponent {
+    pub state: Arc<RwLock<LogViewerState>>,
+    pub log_group_name: String,
+    displayed_messages: Vec<String>,
 }
 
 #[derive(Debug)]
-pub struct LogGroupListState {
-    log_groups: Vec<String>,
+pub struct LogViewerState {
+    log_messsages: Vec<String>,
     loading_state: LoadingState,
     table_state: TableState,
-    group_selection_tx: mpsc::UnboundedSender<LogGroupSelectionOutboundMessage>,
+    group_selection_tx: mpsc::UnboundedSender<LogViewerOutboundMessage>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum LoadingState {
-    #[default]
-    Idle,
-    Loading,
-    Loaded,
-    Error(String),
+pub enum LogViewerOutboundMessage {
+    ReRender,
+    UnselectLogGroup,
 }
 
-pub enum LogGroupSelectionOutboundMessage {
-    SelectedGroup(String),
-    ApplySearch,
-}
-
-impl LogGroupListComponent {
-    pub fn new(
-        group_selection_tx: mpsc::UnboundedSender<LogGroupSelectionOutboundMessage>,
-    ) -> Self {
+impl LogVieweromponent {
+    pub fn new(group_selection_tx: mpsc::UnboundedSender<LogViewerOutboundMessage>) -> Self {
         Self {
-            state: Arc::new(RwLock::new(LogGroupListState {
-                log_groups: vec![],
+            state: Arc::new(RwLock::new(LogViewerState {
+                log_messsages: vec![],
                 loading_state: LoadingState::Idle,
                 table_state: TableState::default(),
                 group_selection_tx,
             })),
-            search_term: String::new(),
-            is_searching: false,
-            sorted_log_groups: vec![],
+            log_group_name: String::new(),
+            displayed_messages: vec![],
         }
     }
     pub fn run(&self) {
@@ -67,159 +56,153 @@ impl LogGroupListComponent {
 
         let config = aws_config::load_from_env().await;
         let client = aws_sdk_cloudwatchlogs::Client::new(&config);
-        let log_groups = match client.describe_log_groups().send().await {
-            Ok(response) => Ok(response
-                .log_groups
-                .unwrap_or_default()
-                .into_iter()
-                .map(|group| group.log_group_name)
-                .flatten()
-                .collect::<Vec<String>>()),
-            Err(e) => Err(e),
+        let query_id = match client
+            .start_query()
+            .set_start_time(Some(
+                chrono::Utc::now().timestamp_millis() - (24 * (3600 * 1000)),
+            ))
+            .set_end_time(Some(chrono::Utc::now().timestamp_millis()))
+            .set_query_string(Some("fields @message".into()))
+            .set_log_group_name(self.log_group_name.clone().into())
+            .send()
+            .await
+        {
+            Ok(response) => response.query_id,
+            Err(e) => panic!("Error: {:?}", e),
         };
 
-        let mut state = self.state.write().unwrap();
-        match log_groups {
-            Ok(groups) => {
-                state.loading_state = LoadingState::Loaded;
-                state.log_groups = groups;
-                if !state.log_groups.is_empty() {
-                    state.table_state.select_first();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+            match client
+                .get_query_results()
+                .set_query_id(query_id.clone())
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    let mut state: std::sync::RwLockWriteGuard<'_, LogViewerState> =
+                        self.state.write().unwrap();
+                    state.log_messsages = response
+                        .results
+                        .unwrap_or_default()
+                        .into_iter()
+                        .flatten()
+                        .filter(|result| result.field == Some("@message".to_string()))
+                        .map(|result| result.value.unwrap_or_default())
+                        .collect::<Vec<String>>();
+
+                    match response.status {
+                        Some(QueryStatus::Complete) => {
+                            if !state.log_messsages.is_empty() {
+                                let num_of_messages = state.log_messsages.len() - 1;
+                                state.loading_state = LoadingState::Loaded;
+                                state.table_state.select(Some(num_of_messages));
+                            }
+                            let _ = state
+                                .group_selection_tx
+                                .send(LogViewerOutboundMessage::ReRender);
+                            break;
+                        }
+                        Some(QueryStatus::Running) => {
+                            state.loading_state = LoadingState::Loading;
+                        }
+                        _ => {
+                            state.loading_state = LoadingState::Idle;
+                        }
+                    }
                 }
-            }
-            Err(e) => {
-                state.loading_state = LoadingState::Error(e.to_string());
-                state.log_groups.clear();
-            }
+                Err(e) => panic!("Error: {:?}", e),
+            };
         }
-        state
-            .group_selection_tx
-            .send(LogGroupSelectionOutboundMessage::ApplySearch)
-            .unwrap();
+
+        // let mut state = self.state.write().unwrap();
+        // match log_groups {
+        //     Ok(groups) => {
+        //         state.loading_state = LoadingState::Loaded;
+        //         state.log_groups = groups;
+        //         if !state.log_groups.is_empty() {
+        //             state.table_state.select_first();
+        //         }
+        //     }
+        //     Err(e) => {
+        //         state.loading_state = LoadingState::Error(e.to_string());
+        //         state.log_groups.clear();
+        //     }
+        // }
     }
 
-    fn scroll_down(&self) {
-        self.state.write().unwrap().table_state.scroll_down_by(1);
+    fn scroll_down(&self, amount: Option<u16>) {
+        self.state
+            .write()
+            .unwrap()
+            .table_state
+            .scroll_down_by(amount.unwrap_or(1));
     }
 
-    fn scroll_up(&self) {
-        self.state.write().unwrap().table_state.scroll_up_by(1);
+    fn scroll_up(&self, amount: Option<u16>) {
+        self.state
+            .write()
+            .unwrap()
+            .table_state
+            .scroll_up_by(amount.unwrap_or(1));
     }
 
-    pub fn apply_search(&mut self) {
-        if self.search_term.is_empty() {
-            self.sorted_log_groups = self.state.read().unwrap().log_groups.clone();
-            return;
-        }
-        let groups = self.state.read().unwrap().log_groups.clone();
-        let matcher = SkimMatcherV2::default();
-        self.sorted_log_groups = groups
-            .into_iter()
-            .map(|group| {
-                (
-                    group.clone(),
-                    matcher.fuzzy_match(&group, &self.search_term),
-                )
-            })
-            .filter(|(_, score)| match score {
-                Some(score) => score > &5,
-                None => false,
-            })
-            .map(|(group, _)| group)
-            .collect();
+    pub fn set_logs(&mut self) {
+        let state = self.state.read().unwrap();
+        self.displayed_messages = state.log_messsages.clone()
+    }
+    pub fn clear_logs(&mut self) {
+        let mut state = self.state.write().unwrap();
+        state.log_messsages = vec![];
+        self.displayed_messages = vec![];
     }
 
     pub fn handle_event(&mut self, event: &Event) -> bool {
-        if let Event::Key(key) = event {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Down => self.scroll_down(),
-                    KeyCode::Up => self.scroll_up(),
-                    KeyCode::Enter => {
-                        let state = self.state.write().unwrap();
-                        if let Some(selected) = self
-                            .sorted_log_groups
-                            .get(state.table_state.selected().unwrap_or(0))
-                        {
-                            state
-                                .group_selection_tx
-                                .send(LogGroupSelectionOutboundMessage::SelectedGroup(
-                                    selected.clone(),
-                                ))
-                                .unwrap();
-                        }
-                    }
-                    _ => (),
-                };
+        let key = match event {
+            Event::Key(key) => key,
+            _ => return false,
+        };
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) => {
+                let _ = self
+                    .state
+                    .write()
+                    .unwrap()
+                    .group_selection_tx
+                    .send(LogViewerOutboundMessage::UnselectLogGroup);
+                return true;
             }
-            if self.is_searching {
-                match key.code {
-                    KeyCode::Esc => {
-                        self.is_searching = false;
-                        self.search_term.clear();
-                        self.sorted_log_groups = self.state.read().unwrap().log_groups.clone();
-                    }
-                    KeyCode::Backspace => {
-                        self.search_term.pop();
-                    }
-                    KeyCode::Char(c) => self.search_term.push(c),
-                    _ => (),
-                }
-                self.apply_search();
-                return key.code == KeyCode::Esc;
-            }
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('/') => self.is_searching = !self.is_searching,
-                    KeyCode::Char('j') => self.scroll_down(),
-                    KeyCode::Char('k') => self.scroll_up(),
-                    KeyCode::Char('r') => {
-                        if self.state.read().unwrap().loading_state != LoadingState::Loading {
-                            let this = self.clone();
-                            tokio::spawn(this.fetch_log_groups());
-                        }
-                    }
-                    _ => (),
-                };
-            }
-        }
+            (KeyCode::Char('k') | KeyCode::Down, _) => self.scroll_up(None),
+            (KeyCode::Char('j') | KeyCode::Up, _) => self.scroll_down(None),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.scroll_up(Some(10)),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.scroll_down(Some(10)),
+            _ => (),
+        };
         false
     }
 }
 
-impl Widget for &LogGroupListComponent {
+impl Widget for &LogVieweromponent {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut state = self.state.write().unwrap();
 
-        // a block with a right aligned title with the loading state on the right
         let loading_state = Line::from(format!("{:?}", state.loading_state)).right_aligned();
-        let title = if self.is_searching {
-            Line::styled(
-                format!("/{}", self.search_term),
-                Style::new().fg(Color::Red),
-            )
-        } else {
-            Line::from("")
-        };
 
-        if self.is_searching {}
         let block = Block::bordered()
-            .title("Log Groups".to_string())
-            .title_bottom(title)
+            .title(self.log_group_name.to_string())
             .title(loading_state)
             .title_bottom(Line::from("q to quit").right_aligned());
 
-        // a table with the list of pull requests
         let rows = self
-            .sorted_log_groups
+            .displayed_messages
             .iter()
             .map(|log_group| Row::new(vec![log_group.to_string()]));
         let widths = [Constraint::Max(49)];
         let table = Table::new(rows, widths)
             .block(block)
             .highlight_spacing(HighlightSpacing::Always)
-            .highlight_symbol("🪵")
-            .highlight_style(Style::new().fg(Color::Red));
+            .highlight_style(Style::new().bg(Color::LightRed));
 
         StatefulWidget::render(table, area, buf, &mut state.table_state);
     }

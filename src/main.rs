@@ -1,28 +1,18 @@
-use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
-};
 
-use color_eyre::{eyre::Context, owo_colors::OwoColorize, Result, Section};
-use crossterm::style::Stylize;
+use color_eyre::Result;
 use futures::StreamExt;
 
-use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
-use log_group::{LogViewerOutboundMessage, LogViewerState, LogVieweromponent};
-use log_viewer::{LogGroupListComponent, LogGroupSelectionOutboundMessage};
+use log_groups::{LogGroupListComponent, LogGroupSelectionOutboundMessage};
+use log_viewer::{LogViewerOutboundMessage, LogVieweromponent};
 use ratatui::{
-    buffer::Buffer,
     crossterm::event::{Event, EventStream, KeyCode, KeyEventKind},
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
-    text::Line,
-    widgets::{Block, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
     DefaultTerminal, Frame,
 };
 use tokio::sync::mpsc;
 
-mod log_group;
+mod log_groups;
 mod log_viewer;
+mod shared;
 
 #[tokio::main]
 async fn main() -> Result<()> {
