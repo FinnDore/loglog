@@ -65,7 +65,7 @@ fn init_aws() -> Result<()> {
 #[derive(Debug, Default)]
 struct App {
     should_quit: bool,
-    pull_requests: PullRequestListWidget,
+    pull_requests: LogGroupListWidget,
 }
 
 impl App {
@@ -114,12 +114,12 @@ impl App {
 /// widget will clone the Arc, so you can pass it around to other threads, and this is used to spawn
 /// a background task to fetch the pull requests.
 #[derive(Debug, Clone, Default)]
-struct PullRequestListWidget {
-    state: Arc<RwLock<PullRequestListState>>,
+struct LogGroupListWidget {
+    state: Arc<RwLock<LogGroupListState>>,
 }
 
 #[derive(Debug, Default)]
-struct PullRequestListState {
+struct LogGroupListState {
     log_groups: Vec<String>,
     loading_state: LoadingState,
     table_state: TableState,
@@ -141,7 +141,7 @@ enum LoadingState {
     Error(String),
 }
 
-impl PullRequestListWidget {
+impl LogGroupListWidget {
     /// Start fetching the pull requests in the background.
     ///
     /// This method spawns a background task that fetches the pull requests from the GitHub API.
@@ -196,7 +196,7 @@ impl PullRequestListWidget {
     }
 }
 
-impl Widget for &PullRequestListWidget {
+impl Widget for &LogGroupListWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut state = self.state.write().unwrap();
 
