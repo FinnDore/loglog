@@ -1,169 +1,224 @@
+//! # [Ratatui] Async example
+//!
+//! This example demonstrates how to use Ratatui with widgets that fetch data asynchronously. It
+//! uses the `octocrab` crate to fetch a list of pull requests from the GitHub API. You will need an
+//! environment variable named `GITHUB_TOKEN` with a valid GitHub personal access token. The token
+//! does not need any special permissions.
+//!
+//! <https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token>
+//! <https://github.com/settings/tokens/new> to create a new token (select classic, and no scopes)
+//!
+//! This example does not cover message passing between threads, it only demonstrates how to manage
+//! shared state between the main thread and a background task, which acts mostly as a one-shot
+//! fetcher. For more complex scenarios, you may need to use channels or other synchronization
+//! primitives.
+//!
+//! A simple app might have multiple widgets that fetch data from different sources, and each widget
+//! would have its own background task to fetch the data. The main thread would then render the
+//! widgets with the latest data.
+//!
+//! The latest version of this example is available in the [examples] folder in the repository.
+//!
+//! Please note that the examples are designed to be run against the `main` branch of the Github
+//! repository. This means that you may not be able to compile with the latest release version on
+//! crates.io, or the one that you have installed locally.
+//!
+//! See the [examples readme] for more information on finding examples that match the version of the
+//! library you are using.
+//!
+//! [Ratatui]: https://github.com/ratatui/ratatui
+//! [examples]: https://github.com/ratatui/ratatui/blob/main/examples
+//! [examples readme]: https://github.com/ratatui/ratatui/blob/main/examples/README.md
 use std::{
-    io,
     sync::{Arc, RwLock},
     time::Duration,
 };
 
-use clap::builder::Str;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
+use color_eyre::{eyre::Context, owo_colors::OwoColorize, Result, Section};
 use futures::StreamExt;
-use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
+
 use ratatui::{
-    crossterm::event::{self},
-    style::{Color, Style, Stylize},
-    text::{Text, ToText},
-    widgets::{List, Paragraph},
-    DefaultTerminal,
+    buffer::Buffer,
+    crossterm::event::{Event, EventStream, KeyCode, KeyEventKind},
+    layout::{Constraint, Layout, Rect},
+    style::{Style, Stylize},
+    text::Line,
+    widgets::{Block, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
+    DefaultTerminal, Frame,
 };
-use tokio::time::sleep;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+    let config = aws_config::load_from_env().await;
     let mut terminal = ratatui::init();
-    terminal.clear().unwrap();
-    let app_result = run(terminal).await.unwrap();
+
+    let app_result = App::default().run(terminal).await;
     ratatui::restore();
+    app_result
 }
 
-async fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
-    let mut is_searching = false;
-    let mut search_term = String::new();
-    let mut selected_index = 0;
-    let mut matches: Vec<(String, i64)> = vec![];
-    let matcher = SkimMatcherV2::default();
-    let mut logs: Vec<String> = vec![];
-
-    let config = aws_config::load_from_env().await;
-    let client = aws_sdk_cloudwatchlogs::Client::new(&config);
-
-    let mut log_selection = LogSelection::new(config).await;
-
-    log_selection
-        .run(terminal)
-        .await
-        .expect("Error running log selection component");
+fn init_aws() -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone)]
-struct LogGroupState {
-    client: aws_sdk_cloudwatchlogs::Client,
-    logs: Vec<String>,
-    rest_call_state: RestCallState,
-}
-
-struct LogSelection {
-    log_group_state: Arc<RwLock<LogGroupState>>,
-    search_term: String,
-    is_searching: bool,
-    selected_index: usize,
-    matcher: SkimMatcherV2,
+#[derive(Debug, Default)]
+struct App {
     should_quit: bool,
+    pull_requests: PullRequestListWidget,
 }
 
-impl LogSelection {
-    async fn new(config: aws_config::SdkConfig) -> Self {
-        let client = aws_sdk_cloudwatchlogs::Client::new(&config);
+impl App {
+    const FRAMES_PER_SECOND: f32 = 60.0;
 
-        Self {
-            search_term: String::new(),
-            matcher: SkimMatcherV2::default(),
-            should_quit: false,
-            log_group_state: Arc::new(RwLock::new(LogGroupState {
-                client,
-                logs: vec![],
-                rest_call_state: RestCallState::LOADING,
-            })),
-            is_searching: false,
-            selected_index: 0,
-        }
-    }
+    pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        self.pull_requests.run();
 
-    async fn run(&mut self, mut terminal: DefaultTerminal) -> io::Result<()> {
-        let period = Duration::from_secs_f32(1.0 / 120.);
+        let period = Duration::from_secs_f32(1.0 / Self::FRAMES_PER_SECOND);
         let mut interval = tokio::time::interval(period);
         let mut events = EventStream::new();
-        tokio::spawn(fetch_log_groups(self.log_group_state.clone()));
+
         while !self.should_quit {
             tokio::select! {
                 _ = interval.tick() => { terminal.draw(|frame| self.draw(frame))?; },
-                Some(Ok(event)) = events.next() => self.handle_event(&event).await,
+                Some(Ok(event)) = events.next() => self.handle_event(&event),
             }
         }
-
         Ok(())
     }
 
-    async fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
-        let state = self.log_group_state.read().unwrap();
-        if state.rest_call_state == RestCallState::LOADING {
-            let greeting = Paragraph::new("Loading...");
-            frame.render_widget(greeting, frame.area());
-        } else if state.rest_call_state == RestCallState::ERROR {
-            let greeting = Paragraph::new("Error loading groups");
-            frame.render_widget(greeting, frame.area());
-        } else {
-            let groups = List::new(
-                self.log_group_state
-                    .read()
-                    .unwrap()
-                    .logs
-                    .clone()
-                    .into_iter()
-                    .map(|g| Text::raw(g))
-                    .collect::<Vec<Text>>(),
-            );
-            frame.render_widget(groups, frame.area());
-        }
+    fn draw(&self, frame: &mut Frame) {
+        let vertical = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]);
+        let [title_area, body_area] = vertical.areas(frame.area());
+        frame.render_widget(&self.pull_requests, body_area);
     }
 
-    async fn handle_event(&mut self, event: &Event) {
+    fn handle_event(&mut self, event: &Event) {
         if let Event::Key(key) = event {
-            if key.kind != KeyEventKind::Press {
+            if key.kind == KeyEventKind::Press {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+                    KeyCode::Char('j') | KeyCode::Down => self.pull_requests.scroll_down(),
+                    KeyCode::Char('k') | KeyCode::Up => self.pull_requests.scroll_up(),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// A widget that displays a list of pull requests.
+///
+/// This is an async widget that fetches the list of pull requests from the GitHub API. It contains
+/// an inner `Arc<RwLock<PullRequestListState>>` that holds the state of the widget. Cloning the
+/// widget will clone the Arc, so you can pass it around to other threads, and this is used to spawn
+/// a background task to fetch the pull requests.
+#[derive(Debug, Clone, Default)]
+struct PullRequestListWidget {
+    state: Arc<RwLock<PullRequestListState>>,
+}
+
+#[derive(Debug, Default)]
+struct PullRequestListState {
+    log_groups: Vec<String>,
+    loading_state: LoadingState,
+    table_state: TableState,
+}
+
+#[derive(Debug, Clone)]
+struct PullRequest {
+    id: String,
+    title: String,
+    url: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum LoadingState {
+    #[default]
+    Idle,
+    Loading,
+    Loaded,
+    Error(String),
+}
+
+impl PullRequestListWidget {
+    /// Start fetching the pull requests in the background.
+    ///
+    /// This method spawns a background task that fetches the pull requests from the GitHub API.
+    /// The result of the fetch is then passed to the `on_load` or `on_err` methods.
+    fn run(&self) {
+        let this = self.clone(); // clone the widget to pass to the background task
+        tokio::spawn(this.fetch_pulls());
+    }
+
+    async fn fetch_pulls(self) {
+        // this runs once, but you could also run this in a loop, using a channel that accepts
+        // messages to refresh on demand, or with an interval timer to refresh every N seconds
+
+        self.state.write().unwrap().loading_state = LoadingState::Loading;
+
+        let config = aws_config::load_from_env().await;
+        let client = aws_sdk_cloudwatchlogs::Client::new(&config);
+        let mut log_groups = match client.describe_log_groups().send().await {
+            Ok(response) => Ok(response
+                .log_groups
+                .unwrap_or_default()
+                .into_iter()
+                .map(|group| group.log_group_name)
+                .flatten()
+                .collect::<Vec<String>>()),
+            Err(e) => Err(e),
+        };
+
+        let mut state = self.state.write().unwrap();
+        match log_groups {
+            Err(e) => {
+                state.loading_state = LoadingState::Error(e.to_string());
+                state.log_groups.clear();
                 return;
             }
-            if key.code == KeyCode::Char('/') {
-                self.is_searching = !self.is_searching;
-            } else if key.code == KeyCode::Char('q') {
-                self.should_quit = true;
+            Ok(groups) => {
+                state.loading_state = LoadingState::Loaded;
+                state.log_groups.extend(groups);
+                if !state.log_groups.is_empty() {
+                    state.table_state.select(Some(0));
+                }
             }
-            //  else if key.code == KeyCode::Down {
-            //     self.selected_index = (self.selected_index + 1).min(self.log_groups.len() - 1);
-            // } else if key.code == KeyCode::Up {
-            //     self.selected_index = (self.selected_index.max(1) - 1).max(0);
-            // }
         }
+    }
+
+    fn scroll_down(&self) {
+        self.state.write().unwrap().table_state.scroll_down_by(1);
+    }
+
+    fn scroll_up(&self) {
+        self.state.write().unwrap().table_state.scroll_up_by(1);
     }
 }
 
-async fn fetch_log_groups(state: Arc<RwLock<LogGroupState>>) {
-    let mut state = state.write().expect("Failed to lock state");
-    let mut log_groups = match state.client.describe_log_groups().send().await {
-        Ok(response) => Ok(response
+impl Widget for &PullRequestListWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let mut state = self.state.write().unwrap();
+
+        // a block with a right aligned title with the loading state on the right
+        let loading_state = Line::from(format!("{:?}", state.loading_state)).right_aligned();
+        let block = Block::bordered()
+            .title("Log Groups")
+            .title(loading_state)
+            .title_bottom(Line::from("q to quit").right_aligned());
+
+        // a table with the list of pull requests
+        let rows = state
             .log_groups
-            .unwrap_or_default()
-            .into_iter()
-            .map(|group| group.log_group_name)
-            .flatten()
-            .collect::<Vec<String>>()),
-        Err(e) => Err(e),
-    };
+            .iter()
+            .map(|log_group| Row::new(vec![log_group.to_string()]));
+        let widths = [Constraint::Max(49)];
+        let table = Table::new(rows, widths)
+            .block(block)
+            .highlight_spacing(HighlightSpacing::Always)
+            .highlight_symbol(">>")
+            .highlight_style(Style::new().red());
 
-    match log_groups {
-        Ok(groups) => {
-            state.logs = groups;
-            state.rest_call_state = RestCallState::OK;
-        }
-        Err(_) => {
-            state.logs = vec![];
-            state.rest_call_state = RestCallState::ERROR;
-        }
+        StatefulWidget::render(table, area, buf, &mut state.table_state);
     }
-}
-
-#[derive(PartialEq, Clone)]
-enum RestCallState {
-    OK,
-    ERROR,
-    LOADING,
 }
