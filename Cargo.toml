@@ -8,7 +8,8 @@ aws-config = { version = "1.5.8", features = ["behavior-version-latest"] }
 aws-sdk-cloudwatchlogs = "1.52.0"
 chrono = "0.4.38"
 clap = { version = "4.5.20", features = ["derive"] }
-crossterm = "0.28.1"
+crossterm = { version =  "0.28.1", features = ["event-stream"] }
+futures = "0.3.31"
 fuzzy-matcher = "0.3.7"
 ratatui = "0.28.1"
-tokio = { version ="1.40.0", features = ["rt-multi-thread", "io-std", "macros"]}
+tokio = { version ="1.40.0", features = ["full"]}
