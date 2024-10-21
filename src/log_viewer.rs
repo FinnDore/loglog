@@ -38,7 +38,7 @@ impl LogVieweromponent {
         Self {
             state: Arc::new(RwLock::new(LogViewerState {
                 log_messsages: vec![],
-                loading_state: LoadingState::Idle,
+                loading_state: LoadingState::Loading,
                 table_state: TableState::default(),
                 group_selection_tx,
             })),
@@ -90,13 +90,14 @@ impl LogVieweromponent {
                         .flatten()
                         .filter(|result| result.field == Some("@message".to_string()))
                         .map(|result| result.value.unwrap_or_default())
+                        .rev()
                         .collect::<Vec<String>>();
 
                     match response.status {
                         Some(QueryStatus::Complete) => {
+                            state.loading_state = LoadingState::Loaded;
                             if !state.log_messsages.is_empty() {
                                 let num_of_messages = state.log_messsages.len() - 1;
-                                state.loading_state = LoadingState::Loaded;
                                 state.table_state.select(Some(num_of_messages));
                             }
                             let _ = state
@@ -115,21 +116,6 @@ impl LogVieweromponent {
                 Err(e) => panic!("Error: {:?}", e),
             };
         }
-
-        // let mut state = self.state.write().unwrap();
-        // match log_groups {
-        //     Ok(groups) => {
-        //         state.loading_state = LoadingState::Loaded;
-        //         state.log_groups = groups;
-        //         if !state.log_groups.is_empty() {
-        //             state.table_state.select_first();
-        //         }
-        //     }
-        //     Err(e) => {
-        //         state.loading_state = LoadingState::Error(e.to_string());
-        //         state.log_groups.clear();
-        //     }
-        // }
     }
 
     fn scroll_down(&self, amount: Option<u16>) {
@@ -173,8 +159,9 @@ impl LogVieweromponent {
                     .send(LogViewerOutboundMessage::UnselectLogGroup);
                 return true;
             }
-            (KeyCode::Char('k') | KeyCode::Down, _) => self.scroll_up(None),
-            (KeyCode::Char('j') | KeyCode::Up, _) => self.scroll_down(None),
+            (KeyCode::Char('r'), _) => self.run(),
+            (KeyCode::Char('k') | KeyCode::Up, _) => self.scroll_up(None),
+            (KeyCode::Char('j') | KeyCode::Down, _) => self.scroll_down(None),
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.scroll_up(Some(10)),
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.scroll_down(Some(10)),
             _ => (),
@@ -186,7 +173,6 @@ impl LogVieweromponent {
 impl Widget for &LogVieweromponent {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut state = self.state.write().unwrap();
-
         let loading_state = Line::from(format!("{:?}", state.loading_state)).right_aligned();
 
         let block = Block::bordered()
@@ -197,12 +183,21 @@ impl Widget for &LogVieweromponent {
         let rows = self
             .displayed_messages
             .iter()
-            .map(|log_group| Row::new(vec![log_group.to_string()]));
-        let widths = [Constraint::Max(49)];
-        let table = Table::new(rows, widths)
-            .block(block)
-            .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::new().bg(Color::LightRed));
+            .map(|log_group| Row::new(vec![log_group.to_string()]))
+            .collect();
+        let widths = [Constraint::Fill(1)];
+
+        let table = Table::new(
+            if self.displayed_messages.is_empty() && state.loading_state != LoadingState::Loading {
+                vec![Row::new(vec!["No logs in this tree".to_string()])]
+            } else {
+                rows
+            },
+            widths,
+        )
+        .block(block)
+        .highlight_spacing(HighlightSpacing::Always)
+        .highlight_style(Style::new().bg(Color::LightRed));
 
         StatefulWidget::render(table, area, buf, &mut state.table_state);
     }

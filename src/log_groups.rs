@@ -60,42 +60,55 @@ impl LogGroupListComponent {
 
         let config = aws_config::load_from_env().await;
         let client = aws_sdk_cloudwatchlogs::Client::new(&config);
-        let log_groups = match client.describe_log_groups().send().await {
-            Ok(response) => Ok(response
+
+        let mut next_token = None;
+        loop {
+            let response = match client
+                .describe_log_groups()
+                .limit(100)
+                .set_next_token(next_token)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    let mut state = self.state.write().unwrap();
+                    state.loading_state = LoadingState::Error(err.to_string());
+                    state.log_groups.clear();
+                    return;
+                }
+            };
+            let partial_log_groups = response
                 .log_groups
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|group| group.log_group_name)
-                .collect::<Vec<String>>()),
-            Err(e) => Err(e),
-        };
+                .collect::<Vec<String>>();
 
-        let mut state = self.state.write().unwrap();
-        match log_groups {
-            Ok(groups) => {
-                state.loading_state = LoadingState::Loaded;
-                state.log_groups = groups;
-                if !state.log_groups.is_empty() {
-                    state.table_state.select_first();
-                }
+            let mut state = self.state.write().unwrap();
+            state.log_groups.extend(partial_log_groups);
+            if state.log_groups.is_empty() {
+                state.table_state.select_first();
             }
-            Err(e) => {
-                state.loading_state = LoadingState::Error(e.to_string());
-                state.log_groups.clear();
+            if response.next_token.is_some() {
+                next_token = response.next_token;
+            } else {
+                state
+                    .group_selection_tx
+                    .send(LogGroupSelectionOutboundMessage::ApplySearch)
+                    .unwrap();
+
+                return state.loading_state = LoadingState::Loaded;
             }
         }
-        state
-            .group_selection_tx
-            .send(LogGroupSelectionOutboundMessage::ApplySearch)
-            .unwrap();
     }
 
     fn scroll_down(&self) {
-        self.state.write().unwrap().table_state.scroll_down_by(1);
+        self.state.write().unwrap().table_state.select_next();
     }
 
     fn scroll_up(&self) {
-        self.state.write().unwrap().table_state.scroll_up_by(1);
+        self.state.write().unwrap().table_state.select_previous();
     }
 
     pub fn apply_search(&mut self) {
@@ -158,7 +171,7 @@ impl LogGroupListComponent {
                     _ => (),
                 }
                 self.apply_search();
-                return key.code == KeyCode::Esc;
+                return key.code == KeyCode::Esc || KeyCode::Char('q') == key.code;
             }
             if key.kind == KeyEventKind::Press {
                 match key.code {
@@ -205,7 +218,7 @@ impl Widget for &LogGroupListComponent {
             .sorted_log_groups
             .iter()
             .map(|log_group| Row::new(vec![log_group.to_string()]));
-        let widths = [Constraint::Max(49)];
+        let widths = [Constraint::Fill(1)];
         let table = Table::new(rows, widths)
             .block(block)
             .highlight_spacing(HighlightSpacing::Always)

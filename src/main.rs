@@ -1,4 +1,3 @@
-
 use color_eyre::Result;
 use futures::StreamExt;
 
@@ -70,7 +69,6 @@ impl App {
                             self.log_viewer_component.clear_logs();
                             self.log_viewer_component.log_group_name.clear();
                         }
-
                     }
                 },
                 Some(Ok(event)) = events.next() => self.handle_event(&event),
