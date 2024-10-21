@@ -1,13 +1,12 @@
 use std::sync::{Arc, RwLock};
 
-use color_eyre::owo_colors::OwoColorize;
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Rect},
     style::{Color, Style},
-    text::{Line, Span, Text, ToSpan},
+    text::{Line, Span},
     widgets::{Block, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
 };
 use tokio::sync::mpsc;
