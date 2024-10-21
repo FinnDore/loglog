@@ -65,7 +65,6 @@ impl LogGroupListComponent {
         loop {
             let response = match client
                 .describe_log_groups()
-                .limit(100)
                 .set_next_token(next_token)
                 .send()
                 .await
@@ -90,14 +89,13 @@ impl LogGroupListComponent {
             if state.log_groups.is_empty() {
                 state.table_state.select_first();
             }
+            state
+                .group_selection_tx
+                .send(LogGroupSelectionOutboundMessage::ApplySearch)
+                .unwrap();
             if response.next_token.is_some() {
                 next_token = response.next_token;
             } else {
-                state
-                    .group_selection_tx
-                    .send(LogGroupSelectionOutboundMessage::ApplySearch)
-                    .unwrap();
-
                 return state.loading_state = LoadingState::Loaded;
             }
         }
