@@ -86,7 +86,7 @@ impl LogGroupListComponent {
 
             let mut state = self.state.write().unwrap();
             state.log_groups.extend(partial_log_groups);
-            if state.log_groups.is_empty() {
+            if !state.log_groups.is_empty() {
                 state.table_state.select_first();
             }
             state
