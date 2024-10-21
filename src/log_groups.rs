@@ -1,12 +1,13 @@
 use std::sync::{Arc, RwLock};
 
+use color_eyre::owo_colors::OwoColorize;
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Rect},
     style::{Color, Style},
-    text::Line,
+    text::{Line, Span, Text, ToSpan},
     widgets::{Block, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
 };
 use tokio::sync::mpsc;
@@ -16,7 +17,7 @@ use crate::shared::LoadingState;
 #[derive(Debug, Clone)]
 pub struct LogGroupListComponent {
     pub(crate) state: Arc<RwLock<LogGroupListState>>,
-    sorted_log_groups: Vec<String>,
+    sorted_log_groups: Vec<(String, Vec<usize>)>,
     search_term: String,
     is_searching: bool,
 }
@@ -111,7 +112,15 @@ impl LogGroupListComponent {
 
     pub fn apply_search(&mut self) {
         if self.search_term.is_empty() {
-            self.sorted_log_groups = self.state.read().unwrap().log_groups.clone();
+            self.sorted_log_groups = self
+                .state
+                .read()
+                .unwrap()
+                .log_groups
+                .clone()
+                .into_iter()
+                .map(|group| (group, vec![]))
+                .collect();
             return;
         }
         let groups = self.state.read().unwrap().log_groups.clone();
@@ -121,14 +130,15 @@ impl LogGroupListComponent {
             .map(|group| {
                 (
                     group.clone(),
-                    matcher.fuzzy_match(&group, &self.search_term),
+                    matcher.fuzzy_indices(&group, &self.search_term),
                 )
             })
             .filter(|(_, score)| match score {
-                Some(score) => score > &5,
+                Some((s, _)) => s > &5,
                 None => false,
             })
-            .map(|(group, _)| group)
+            .map(|(group, score)| (group, score.unwrap_or_default()))
+            .map(|(group, (_, indices))| (group, indices))
             .collect();
     }
 
@@ -140,7 +150,7 @@ impl LogGroupListComponent {
                     KeyCode::Up => self.scroll_up(),
                     KeyCode::Enter => {
                         let state = self.state.write().unwrap();
-                        if let Some(selected) = self
+                        if let Some((selected, _)) = self
                             .sorted_log_groups
                             .get(state.table_state.selected().unwrap_or(0))
                         {
@@ -160,7 +170,15 @@ impl LogGroupListComponent {
                     KeyCode::Esc => {
                         self.is_searching = false;
                         self.search_term.clear();
-                        self.sorted_log_groups = self.state.read().unwrap().log_groups.clone();
+                        self.sorted_log_groups = self
+                            .state
+                            .read()
+                            .unwrap()
+                            .log_groups
+                            .clone()
+                            .iter()
+                            .map(|group| (group.clone(), vec![]))
+                            .collect();
                     }
                     KeyCode::Backspace => {
                         self.search_term.pop();
@@ -212,10 +230,23 @@ impl Widget for &LogGroupListComponent {
             .title_bottom(Line::from("q to quit").right_aligned());
 
         // a table with the list of pull requests
-        let rows = self
-            .sorted_log_groups
-            .iter()
-            .map(|log_group| Row::new(vec![log_group.to_string()]));
+        let rows = self.sorted_log_groups.iter().map(|(log_group, indecies)| {
+            Row::new(vec![Line::from(
+                log_group
+                    .char_indices()
+                    .map(|(index, c)| {
+                        Span::styled(
+                            c.to_string(),
+                            Style::new().fg(if indecies.contains(&index) {
+                                Color::Red
+                            } else {
+                                Color::White
+                            }),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )])
+        });
         let widths = [Constraint::Fill(1)];
         let table = Table::new(rows, widths)
             .block(block)
