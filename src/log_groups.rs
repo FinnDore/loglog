@@ -239,7 +239,7 @@ impl Widget for &LogGroupListComponent {
                             Style::new().fg(if indecies.contains(&index) {
                                 Color::Red
                             } else {
-                                Color::White
+                                Color::Reset
                             }),
                         )
                     })
