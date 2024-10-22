@@ -123,7 +123,7 @@ impl LogGroupListComponent {
             return;
         }
         let groups = self.state.read().unwrap().log_groups.clone();
-        let matcher = SkimMatcherV2::default();
+        let matcher = SkimMatcherV2::default().ignore_case();
         self.sorted_log_groups = groups
             .into_iter()
             .map(|group| {
