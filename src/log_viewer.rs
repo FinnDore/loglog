@@ -1,30 +1,44 @@
+use std::iter::Enumerate;
+use std::slice::Iter;
 use std::sync::{Arc, RwLock};
 
 use aws_sdk_cloudwatchlogs::types::QueryStatus;
+use clap::builder::Str;
+use color_eyre::owo_colors::OwoColorize;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
+use rat_ftable::selection::rowselection;
+use rat_ftable::textdata::Row;
+use rat_ftable::TableDataIter;
+use rat_ftable::{
+    selection::{NoSelection, RowSelection},
+    Table, TableData, TableState,
+};
+use ratatui::text::Span;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Rect},
     style::{Color, Style},
-    text::Line,
-    widgets::{Block, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
+    text::{Line, Text},
+    widgets::{Block, HighlightSpacing, StatefulWidget, Widget},
 };
 use tokio::sync::mpsc;
 
-use crate::shared::LoadingState;
+use crate::shared::{LoadingState, ONE_HOUR_MS};
 
-#[derive(Debug, Clone)]
-pub struct LogVieweromponent {
+#[derive(Debug)]
+pub struct LogViewerComponent<'a> {
     pub state: Arc<RwLock<LogViewerState>>,
     pub log_group_name: String,
     displayed_messages: Vec<String>,
+    table: Table<'a, RowSelection>,
+    table_state: TableState<RowSelection>,
+    scrolled: bool,
 }
 
 #[derive(Debug)]
 pub struct LogViewerState {
     log_messsages: Vec<String>,
     loading_state: LoadingState,
-    table_state: TableState,
     group_selection_tx: mpsc::UnboundedSender<LogViewerOutboundMessage>,
 }
 
@@ -33,37 +47,57 @@ pub enum LogViewerOutboundMessage {
     UnselectLogGroup,
 }
 
-impl LogVieweromponent {
+impl<'a> LogViewerComponent<'a> {
     pub fn new(group_selection_tx: mpsc::UnboundedSender<LogViewerOutboundMessage>) -> Self {
+        let mut table_state = TableState::default();
+        table_state.set_scroll_selection(true);
         Self {
             state: Arc::new(RwLock::new(LogViewerState {
                 log_messsages: vec![],
                 loading_state: LoadingState::Loading,
-                table_state: TableState::default(),
                 group_selection_tx,
             })),
+            table: Table::new(),
             log_group_name: String::new(),
             displayed_messages: vec![],
+            table_state,
+            scrolled: false,
         }
     }
-    pub fn run(&self) {
-        let this = self.clone(); // clone the widget to pass to the background task
-        tokio::spawn(this.fetch_log_groups());
+
+    pub fn get_table<T>(rows: T, block: Block<'a>) -> Table<RowSelection>
+    where
+        T: IntoIterator<Item = Row<'a>>,
+    {
+        Table::new()
+            .rows(rows)
+            .widths(&[Constraint::Fill(1)])
+            .block(block)
+        // .highlight_spacing(HighlightSpacing::Always)
+        // .highlight_style(Style::new().bg(Color::LightRed))
     }
 
-    async fn fetch_log_groups(self) {
-        self.state.write().unwrap().loading_state = LoadingState::Loading;
+    pub fn run(&self) {
+        let state = self.state.clone();
+        tokio::spawn(LogViewerComponent::fetch_logs(
+            state,
+            self.log_group_name.clone(),
+        ));
+    }
+
+    async fn fetch_logs(state: Arc<RwLock<LogViewerState>>, log_group_name: String) {
+        state.write().unwrap().loading_state = LoadingState::Loading;
 
         let config = aws_config::load_from_env().await;
         let client = aws_sdk_cloudwatchlogs::Client::new(&config);
         let query_id = match client
             .start_query()
             .set_start_time(Some(
-                chrono::Utc::now().timestamp_millis() - (24 * (3600 * 1000)),
+                chrono::Utc::now().timestamp_millis() - (ONE_HOUR_MS * 5),
             ))
             .set_end_time(Some(chrono::Utc::now().timestamp_millis()))
             .set_query_string(Some("fields @message".into()))
-            .set_log_group_name(self.log_group_name.clone().into())
+            .set_log_group_name(log_group_name.into())
             .send()
             .await
         {
@@ -82,14 +116,14 @@ impl LogVieweromponent {
             {
                 Ok(response) => {
                     let mut state: std::sync::RwLockWriteGuard<'_, LogViewerState> =
-                        self.state.write().unwrap();
+                        state.write().unwrap();
                     state.log_messsages = response
                         .results
                         .unwrap_or_default()
                         .into_iter()
                         .flatten()
                         .filter(|result| result.field == Some("@message".to_string()))
-                        .map(|result| result.value.unwrap_or_default())
+                        .map(|message| message.value.unwrap_or_default())
                         .rev()
                         .collect::<Vec<String>>();
 
@@ -98,7 +132,8 @@ impl LogVieweromponent {
                             state.loading_state = LoadingState::Loaded;
                             if !state.log_messsages.is_empty() {
                                 let num_of_messages = state.log_messsages.len() - 1;
-                                state.table_state.select(Some(num_of_messages));
+                                // TODO
+                                // state.table_state.select(Some(num_of_messages));
                             }
                             let _ = state
                                 .group_selection_tx
@@ -118,33 +153,34 @@ impl LogVieweromponent {
         }
     }
 
-    fn scroll_down(&self, amount: Option<u16>) {
-        self.state
-            .write()
-            .unwrap()
-            .table_state
-            .scroll_down_by(amount.unwrap_or(1));
+    fn scroll_down(&mut self, amount: Option<usize>) {
+        self.table_state.scroll_down(amount.unwrap_or(1));
     }
 
-    fn scroll_up(&self, amount: Option<u16>) {
-        self.state
-            .write()
-            .unwrap()
-            .table_state
-            .scroll_up_by(amount.unwrap_or(1));
+    fn scroll_up(&mut self, amount: Option<usize>) {
+        self.table_state.scroll_up(amount.unwrap_or(1));
     }
 
     pub fn set_logs(&mut self) {
         let state = self.state.read().unwrap();
-        self.displayed_messages = state.log_messsages.clone()
+        self.displayed_messages = state
+            .log_messsages
+            .clone()
+            .iter()
+            .map(|message| message.clone())
+            .collect();
+        self.table_state
+            .scroll_to_row(self.displayed_messages.len() - 1);
     }
+
     pub fn clear_logs(&mut self) {
         let mut state = self.state.write().unwrap();
-        state.log_messsages = vec![];
+        state.log_messsages.clear();
         self.displayed_messages = vec![];
     }
 
     pub fn handle_event(&mut self, event: &Event) -> bool {
+        // let _ = rowselection::handle_events(&mut self.table_state, true, event);
         let key = match event {
             Event::Key(key) => key,
             _ => return false,
@@ -170,9 +206,9 @@ impl LogVieweromponent {
     }
 }
 
-impl Widget for &LogVieweromponent {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut state = self.state.write().unwrap();
+impl<'a> LogViewerComponent<'a> {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        let state = self.state.write().unwrap();
         let loading_state = Line::from(format!("{:?}", state.loading_state)).right_aligned();
 
         let block = Block::bordered()
@@ -180,25 +216,52 @@ impl Widget for &LogVieweromponent {
             .title(loading_state)
             .title_bottom(Line::from("q to quit").right_aligned());
 
-        let rows = self
-            .displayed_messages
-            .iter()
-            .map(|log_group| Row::new(vec![log_group.to_string()]))
-            .collect();
-        let widths = [Constraint::Fill(1)];
+        Table::default()
+            .iter(DataIter {
+                size: self.displayed_messages.len(),
+                iter: self.displayed_messages.iter().enumerate(),
+                item: None,
+            })
+            .select_row_style(Some(Style::new()))
+            .block(block)
+            .render(area, buf, &mut self.table_state);
+    }
+}
 
-        let table = Table::new(
-            if self.displayed_messages.is_empty() && state.loading_state != LoadingState::Loading {
-                vec![Row::new(vec!["No logs in this tree".to_string()])]
-            } else {
-                rows
-            },
-            widths,
-        )
-        .block(block)
-        .highlight_spacing(HighlightSpacing::Always)
-        .highlight_style(Style::new().bg(Color::LightRed));
+struct DataIter<'a> {
+    size: usize,
+    iter: Enumerate<Iter<'a, String>>,
+    item: Option<(usize, &'a String)>,
+}
 
-        StatefulWidget::render(table, area, buf, &mut state.table_state);
+impl<'a> TableDataIter<'a> for DataIter<'a> {
+    fn widths(&self) -> Vec<Constraint> {
+        vec![Constraint::Percentage(100)]
+    }
+
+    fn rows(&self) -> Option<usize> {
+        Some(self.size)
+    }
+
+    fn nth(&mut self, n: usize) -> bool {
+        self.item = self.iter.nth(n);
+        self.item.is_some()
+    }
+
+    fn render_cell(
+        &self,
+        ctx: &rat_ftable::TableContext,
+        column: usize,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let item = self.item.expect("item should be set");
+        let style = match ctx.selected_row {
+            true => Style::new(),
+            false => Style::new(),
+        };
+
+        let text = Span::styled(item.1, style);
+        text.render(area, buf);
     }
 }
