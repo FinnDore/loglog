@@ -2,9 +2,10 @@ use color_eyre::Result;
 use futures::StreamExt;
 
 use log_groups::{LogGroupListComponent, LogGroupSelectionOutboundMessage};
-use log_viewer::{LogViewerOutboundMessage, LogVieweromponent};
+use log_viewer::{LogViewerComponent, LogViewerOutboundMessage};
 use ratatui::{
     crossterm::event::{Event, EventStream, KeyCode, KeyEventKind},
+    widgets::Widget,
     DefaultTerminal, Frame,
 };
 use tokio::sync::mpsc;
@@ -18,24 +19,24 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
     let terminal = ratatui::init();
 
-    let app = App::new();
+    let mut app = App::new();
     let app_result = app.run(terminal).await;
     ratatui::restore();
     app_result
 }
 
 #[derive(Debug)]
-struct App {
+struct App<'a> {
     should_quit: bool,
     selected_group: Option<String>,
     log_groups_component: LogGroupListComponent,
     log_group_selection_rx: mpsc::UnboundedReceiver<LogGroupSelectionOutboundMessage>,
-    log_viewer_component: LogVieweromponent,
+    log_viewer_component: LogViewerComponent<'a>,
     log_viewer_rx: mpsc::UnboundedReceiver<LogViewerOutboundMessage>,
 }
 
-impl App {
-    pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+impl<'a> App<'a> {
+    pub async fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
         self.log_groups_component.run();
 
         let mut events = EventStream::new();
@@ -63,6 +64,7 @@ impl App {
                         None => (),
                         Some(LogViewerOutboundMessage::ReRender) => {
                             self.log_viewer_component.set_logs();
+                            terminal.draw(|frame| self.draw(frame))?;
                         }
                         Some(LogViewerOutboundMessage::UnselectLogGroup) => {
                             self.selected_group = None;
@@ -77,9 +79,11 @@ impl App {
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         if self.selected_group.is_some() {
-            frame.render_widget(&self.log_viewer_component, frame.area());
+            &self
+                .log_viewer_component
+                .render(frame.area(), frame.buffer_mut());
         } else {
             frame.render_widget(&self.log_groups_component, frame.area());
         }
@@ -106,7 +110,7 @@ impl App {
     }
 }
 
-impl App {
+impl<'a> App<'a> {
     fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<LogGroupSelectionOutboundMessage>();
         let (log_viewer_tx, log_viewer_rx) = mpsc::unbounded_channel::<LogViewerOutboundMessage>();
@@ -114,7 +118,7 @@ impl App {
             should_quit: false,
             selected_group: None,
             log_groups_component: LogGroupListComponent::new(tx),
-            log_viewer_component: LogVieweromponent::new(log_viewer_tx),
+            log_viewer_component: LogViewerComponent::new(log_viewer_tx),
             log_viewer_rx,
             log_group_selection_rx: rx,
         }

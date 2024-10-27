@@ -72,7 +72,7 @@ impl LogGroupListComponent {
                 Ok(response) => response,
                 Err(err) => {
                     let mut state = self.state.write().unwrap();
-                    state.loading_state = LoadingState::Error(err.to_string());
+                    state.loading_state = LoadingState::Error(err.into_service_error().to_string());
                     state.log_groups.clear();
                     return;
                 }
