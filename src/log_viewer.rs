@@ -14,6 +14,7 @@ use rat_ftable::{
     Table, TableData, TableState,
 };
 use ratatui::text::Span;
+use ratatui::widgets::Borders;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Rect},
@@ -65,18 +66,6 @@ impl<'a> LogViewerComponent<'a> {
         }
     }
 
-    pub fn get_table<T>(rows: T, block: Block<'a>) -> Table<RowSelection>
-    where
-        T: IntoIterator<Item = Row<'a>>,
-    {
-        Table::new()
-            .rows(rows)
-            .widths(&[Constraint::Fill(1)])
-            .block(block)
-        // .highlight_spacing(HighlightSpacing::Always)
-        // .highlight_style(Style::new().bg(Color::LightRed))
-    }
-
     pub fn run(&self) {
         let state = self.state.clone();
         tokio::spawn(LogViewerComponent::fetch_logs(
@@ -93,7 +82,7 @@ impl<'a> LogViewerComponent<'a> {
         let query_id = match client
             .start_query()
             .set_start_time(Some(
-                chrono::Utc::now().timestamp_millis() - (ONE_HOUR_MS * 5),
+                chrono::Utc::now().timestamp_millis() - (ONE_HOUR_MS * 48),
             ))
             .set_end_time(Some(chrono::Utc::now().timestamp_millis()))
             .set_query_string(Some("fields @message".into()))
@@ -169,8 +158,9 @@ impl<'a> LogViewerComponent<'a> {
             .iter()
             .map(|message| message.clone())
             .collect();
+        println!("{}", self.displayed_messages.len());
         self.table_state
-            .scroll_to_row(self.displayed_messages.len() - 1);
+            .scroll_to_row(self.displayed_messages.len().saturating_sub(1));
     }
 
     pub fn clear_logs(&mut self) {
@@ -211,7 +201,8 @@ impl<'a> LogViewerComponent<'a> {
         let state = self.state.write().unwrap();
         let loading_state = Line::from(format!("{:?}", state.loading_state)).right_aligned();
 
-        let block = Block::bordered()
+        let block = Block::new()
+            .borders(Borders::BOTTOM | Borders::TOP)
             .title(self.log_group_name.to_string())
             .title(loading_state)
             .title_bottom(Line::from("q to quit").right_aligned());

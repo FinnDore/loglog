@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
+    widgets::{Block, Borders, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
 };
 use tokio::sync::mpsc;
 
@@ -211,7 +211,6 @@ impl Widget for &LogGroupListComponent {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut state = self.state.write().unwrap();
 
-        // a block with a right aligned title with the loading state on the right
         let loading_state = Line::from(format!("{:?}", state.loading_state)).right_aligned();
         let title = if self.is_searching {
             Line::styled(
@@ -222,13 +221,13 @@ impl Widget for &LogGroupListComponent {
             Line::from("")
         };
 
-        let block = Block::bordered()
+        let block = Block::new()
+            .borders(Borders::BOTTOM | Borders::TOP)
             .title("Log Groups".to_string())
             .title_bottom(title)
             .title(loading_state)
             .title_bottom(Line::from("q to quit").right_aligned());
 
-        // a table with the list of pull requests
         let rows = self.sorted_log_groups.iter().map(|(log_group, indecies)| {
             Row::new(vec![Line::from(
                 log_group
