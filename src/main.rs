@@ -9,9 +9,11 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
+mod aws;
 mod log_groups;
 mod log_viewer;
 mod shared;
+mod table;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -61,8 +63,9 @@ impl App {
                  event = self.log_viewer_rx.recv() => {
                     match event {
                         None => (),
-                        Some(LogViewerOutboundMessage::ReRender) => {
-                            self.log_viewer_component.set_logs();
+                        Some(LogViewerOutboundMessage::ReRender) => {},
+                        Some(LogViewerOutboundMessage::SetLogs(log_messages)) => {
+                            self.log_viewer_component.set_logs(log_messages);
                         }
                         Some(LogViewerOutboundMessage::UnselectLogGroup) => {
                             self.selected_group = None;
