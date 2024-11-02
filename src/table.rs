@@ -4,7 +4,6 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
-    text::{Line, ToText},
     widgets::{Block, Borders, Widget},
 };
 
@@ -42,7 +41,7 @@ impl Widget for &Table {
             buf.set_stringn(
                 area.x + 1,
                 area.y + index as u16 + 1,
-                message.to_string(),
+                message,
                 (area.width - 2) as usize,
                 Style::new().bg(if self.y == starting + (innner_height - index) - 1 {
                     Color::LightRed

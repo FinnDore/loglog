@@ -112,8 +112,8 @@ impl LogVieweromponent {
             (KeyCode::Char('r'), _) => self.run(),
             (KeyCode::Char('k') | KeyCode::Up, _) => self.table.scroll_up(None),
             (KeyCode::Char('j') | KeyCode::Down, _) => self.table.scroll_down(None),
-            (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.table.scroll_up(Some(2000)),
-            (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.table.scroll_down(Some(10)),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => self.table.scroll_up(Some(20)),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => self.table.scroll_down(Some(20)),
             _ => (),
         };
         false
